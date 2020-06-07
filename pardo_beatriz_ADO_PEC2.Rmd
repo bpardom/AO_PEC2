@@ -1,0 +1,834 @@
+---
+title: "PEC2"
+author: "Beatriz Pardo Montenegro"
+date: "7/6/2020"
+output:
+  pdf_document: 
+    toc: yes
+    toc_depth: 3
+link-citations: yes  
+---
+
+
+URL GitHub: https://github.com/bpardom/AO_PEC2.git
+
+# 1.Abstract
+Mediante análisis de RNA seq comparamos la expresión génica en distintos tipos de muestras de tiroides, según presenten algún grado o no de infiltración linfoide. Lo genes que están diferencialmente expresados en cada uno de los 3 grupos vemos que están implicados en procesos biológicos de respuesta inmune (GO:0006955, GO:0002376) y de adhesión biológica (GO:0022610).
+
+# 2.Objetivos
+Evaluar el expresión génica diferencial entre en muestras con distinto grado de infiltración linfoide. Queremos saber también en qué procesos biológicos y rutas metabólicos están implicados los genes diferencialmente expresados según el grado de infiltración.
+
+# 3.Materiales y métodos
+
+## 3.1 Naturaleza de los datos
+Parto de los datos de expresión (RNA-seq) pertenecientes a un análisis del tiroides, donde se compara tres tipos de tejido que se diferencian según el grado de infiltración linfoide. Parto de un total de 292 muestras pertenecientes a tres grupos:
+• Not infiltrated tissues (NIT): 236 muestras
+• Small focal infiltrates (SFI): 42 muestras
+• Extensive lymphoid infiltrates (ELI): 14 muestras
+
+Para mi análisis debo tomar al azar 10 muestras de cada grupo de los 3 que hay en el archivo targets y una vez seleccionadas debo conseguir que el programa cargue los datos de expresión de dichas muestras del archivo counts.
+
+## 3.2 Tipo de experimento
+El tipo de experimento que planteo es de comparación de grupos. El objetivo de los estudios comparativos es determinar si los perfiles de expresión génica difieren entre grupos previamente identificados, en mi análisis tengo 10 muestras de tejido sin infiltración linfoide, 10 muestras con pequeños focos de infiltración y 10 muestras con una extensa infiltración linfoide.
+
+## 3.3 Materiales
+### 3.3.1 Datos
+Utilizo los datos de 2 archivos targets y counts que contienen la información de las muestras de un estudio obtenido del repositorio (GTEx1). Este repositorio contiene datos de múltiples tipos en un total de 54 tejidos. Nosotros nos centraremos en los datos de expresión (RNA-seq) pertenecientes a un análisis del tiroides en donde se compara tres tipos de infiltración medido en un total de 292 muestras pertenecientes a tres grupos. Seleccionamos 10 muestras de cada uno de los grupos.
+
+### 3.3.2 Sofware utilizado
+Para el desarrollo del proceso de análisis de los datos, utilizo  el  software libre R a través de la interfaz RStudio. Los paquetes que fueron usados para la realización del  proyecto, provienen tanto de R como de Bioconductor. R es un lenguaje de programación funcional orientado especialmente a la manipulación de datos, cálculos estadísticos y generación y visualización de  gráficos. Por su parte, RStudio es un entorno de desarrollo integrado  y Bioconductor es un software libre que utiliza el lenguaje estadístico de R y proporciona herramientas para el análisis y comprensión de datos genómicos de alto rendimiento.
+Para que el experimento sea reproducible y poderlo compartir con otras personas creo un repositorio en Github.
+
+## 3.4 Procedimiento general de análisis
+```{r, include=FALSE}
+#Cargo las librerías que utilizo para la realización del análisis
+library(dplyr)
+library(stringr)
+library(BiocManager)
+library(DESeq2)
+library(edgeR)
+library(DEFormats)
+library(pheatmap)
+library(RColorBrewer)
+library(pcaExplorer)
+library(apeglm)
+library(limma)
+library(ggbeeswarm)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(grex)
+library(clusterProfiler)
+library(goseq)
+```
+
+### 3.4.1 Definición de los datos
+Cargo los datos del archivo targets y del archivo counts mediante la función read.csv. Fijo una semilla, doy la orden para que me coja aleatoriamente 10 muestras de cada grupo y que no haya reemplazo, para que siempre sea la misma muestra. Corrijo el posible conflicto entre los . y los - entre el archivo targets y counts.Selecciono que se carguen las 10 filas de cada grupo de targets cogiendo las columnas del archivo de counts cuyo nombre de la muestra coincide. Nombro a cada muestra del grupo ELI como ELI1, ELI2, ELI3,... y de igual manera con NIT y SFI.
+
+```{r, include=FALSE}
+#Cargo los datos utilizando read.csv
+targets <- read.csv(file = "C:/Bea/Master/Datos omicos Bea/PEC2/Data/targets.csv", header = T, sep = ",")
+counts <- read.csv(file = "C:/Bea/Master/Datos omicos Bea/PEC2/Data/counts.csv", header = T, sep = ";")
+```
+
+```{r, include=FALSE}
+#Fijo semilla y selecciono del archivo targets 10 de cada grupo sin reemplazo
+set.seed(123456)
+selec<- targets %>% group_by(Group) %>% sample_n(size = 10, replace = FALSE)
+```
+
+
+```{r, include=FALSE}
+#Soluciono error entre . y - Cojo para cada muestra seleccionada en targets la columna de counts cuyo nombre coincida
+colnames(counts) <- str_replace_all(colnames(counts), "[.]", "-")
+selecname <- c(selec$Sample_Name)
+seleccount <- counts[2:293][selecname]
+rownames(seleccount) <- counts[,1]
+```
+
+```{r, include=FALSE}
+#Nombro cada columna del grupo ELI con números correlativos e igual para NIT y SFI
+cols<-c("ELI1","ELI2","ELI3","ELI4","ELI5","ELI6","ELI7","ELI8","ELI9","ELI10","NIT1","NIT2","NIT3","NIT4","NIT15","NIT6","NIT7","NIT8","NIT9","NIT10","SFI1","SFI2","SFI3","SFI4","SFI5","SFI6","SFI7","SFI8","SFI9","SFI10")
+colnames(seleccount)<-cols
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Cantidad de genes
+nrow(seleccount)
+```
+
+Compruebo que son 56202 genes.
+
+### 3.4.2 Preprocesado de los datos: filtraje y normalización
+Creo un objeto DGElist a partir de la matriz de conteos. Filtro los genes que tengan una baja expresión en la mayoria de muestras. Para cuantificar la expresión utilizamos la función cpm que calcula los valores de recuento por millón. Se filtran los genes que no superan un umbral de al menos dos muestras con más de un recuento por millón.
+
+```{r, include=FALSE}
+#Creación de un objeto DGElist a partir de la matriz de conteos
+grupos <- rep(c("ELI", "NIT", "SFI"), each = 10)
+seleclist <- DGEList(as.matrix(seleccount), group = grupos)
+```
+
+```{r, include=FALSE}
+#Calculo de recuento por millón con cpm
+selecDESmillion <- cpm(seleclist)
+scmillion <- selecDESmillion > 1
+scmillionk <- which(rowSums(scmillion) >= 2)
+millionlist <- seleclist[scmillionk,]
+```
+
+La cantidad de genes tras el filtrado se reduce considerablemente: 19537
+```{r, warning=FALSE, include=FALSE}
+#Cantidad de genes tras filtrado
+nrow(millionlist)
+```
+Hago una transformación logarítmica de los datos mediante la funcion rlog para poder visualizar los datos. Y realizo control de calidad.
+
+```{r, warning=FALSE, include=FALSE}
+#Transformación logarítmica con rlog
+millionlist <- as.DESeqDataSet(millionlist)
+millionlog <- rlog(millionlist, blind = FALSE)
+```
+Creo un Heatmap para poder observar de una manera más visual la distancia entre muestras. Los colores no muestran una escala real de asociación pero ayudan al usuario a ver cómo se relacionan las muestras.
+
+```{r, fig.cap="Figura1: Heatmap representativo de las distancias entre las muestras", warning=FALSE,echo=FALSE}
+#Cálculo de las distancias entre muestras y su representación mediane Heatmap
+sdist <- dist(t(assay(millionlog)))
+sampleDistMatrix <- as.matrix(sdist)
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sdist,
+         clustering_distance_cols = sdist,
+         col = colors)
+```
+
+Instalo la librería pcaExplorer que contiene funciones que permiten hacer gráficos muy visuales. En los gráficos de análisis de componentes principales se observan como se agrupan las muestras. El primer componente explica un 59,97% de la variabilidad de la varianza.
+
+```{r, fig.cap="Figura2: Plot análisis componentes principales", warning=FALSE,echo=FALSE}
+#Gráfico ánalisis de componentes
+pcaplot(millionlog,intgroup = c("group"))
+```
+
+La figura 3 muestra la distribución del recuento de cada muestra después de filtrar 36665 genes que mostraron baja expresión. Continúo trabajando con la expresión de 19537 genes.
+
+```{r, fig.cap="Figura3: Distribución del recuento de cada muestra", warning=FALSE,echo=FALSE}
+#Distribución del recuento de cada muestra 
+distro_expr(millionlog,plot_type = "density")
+```
+
+Cómo se aprecia en las figuras de boxplots todas las cajas son similares, no observándose cajas notablemente desplazadas hacia arriba o hacia abajo, con lo que no debería descartar ninguna muestra.
+
+
+```{r,fig.cap="Figura4: Gráfico de distribución", warning=FALSE,echo=FALSE}
+#Distribución de cada muestra 
+distro_expr(millionlog,plot_type = "violin")
+```
+
+
+Los genes con una alta (anormalmente grande) expresión corresponden con el bigote superior en los diagramas de caja que se representan en la figura 6.
+
+```{r,fig.cap="Figura5: Boxplot", warning=FALSE,echo=FALSE}
+#Boxplot 
+distro_expr(millionlog,plot_type = "boxplot")
+```
+
+La normalización es un proceso diseñado para identificar y eliminar las diferencias técnicas entre las muestras. Muchas son las ventajas de este paso del análisis, las dos principales: nos permite eliminar el ruido de fondo y nos permite hacer comparables todos los valores del estudio. Creo la matriz de diseño y normalizo con la función calcNormFactors. Utilizo la función voom para realizar una transformación en la que se estima la tendencia de la varianza respecto a la media en el counting data, ajustando la heterocedasticidad.
+
+```{r, warning=FALSE, include=FALSE}
+#Matriz de diseño
+madis <- cbind(ELI = c(1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0), 
+               NIT = c(0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0), 
+               SFI= c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1))
+rownames(madis) <- (rownames(millionlog@colData))
+madis
+```
+
+```{r, fig.cap="Figura6: Gráfico tranformación Voom tras normalización", warning=FALSE,echo=FALSE}
+trans <- as.DGEList(millionlist)
+transnorm <- calcNormFactors(millionlist)
+transvoom <- voom(transnorm,madis,plot = TRUE)
+```
+
+### 3.4.3 Identificación de genes diferencialmente expresados
+Realizo el análisis de expresión diferencial con DESeq2^[https://bioconductor.org/packages/release/bioc/html/DESeq2.html]. Es una manera muy cómoda ya que no es necesario realizar los diferentes pasos del análisis uno a uno. La mayoría de las funciones se han unificado y a través de la función DESeq y la función results para visualizar los resultados realizo el análisis completo en cada uno de los grupos.
+
+```{r, warning=FALSE, include=FALSE}
+#Análisis de expresión diferencial con función DESeq
+dea <- DESeq(millionlist)
+resc1 <- results(dea,contrast = c("group", "ELI", "SFI"))
+resc2 <- results(dea,contrast = c("group", "ELI", "NIT"))
+resc3 <- results(dea,contrast = c("group", "SFI", "NIT"))
+head(resc1)
+```
+
+La tabla de resultados proporcionada por la función results contiene información del pvalor y del pvalor ajustado (padj), a partir de los cuales obtenemos los tránsitos diferencialmente expresados.
+
+```{r, warning=FALSE, include=FALSE}
+#Ordeno según pvalor
+resOrdered1 <- resc1[order(resc1$pvalue),]
+resOrdered2 <- resc2[order(resc2$pvalue),]
+resOrdered3 <- resc3[order(resc3$pvalue),]
+```
+
+Para conocer el número de genes diferencialmente expresados entre los 2 grupos experimentales utilizo la función summary. El paquete DESeq2 emplea por defecto el nivel de significación de alpha 0.01. Puedo modificarlo pero para poder comparar resultados el nivel de significación tiene que ser el mismo para todos los grupos.
+
+```{r, warning=FALSE, include=FALSE}
+#Número de genes diferenciados con alpha 0.01 en resc1
+summary(resc1)
+```
+
+En resc1, 1725 genes presentan un logFC significativamente negativo y 2530 genes un logFC significativamente positivo a un nivel de significación de 0.01.
+
+
+```{r, warning=FALSE, include=FALSE}
+#Número de genes diferenciados con alpha 0.01 en resc2
+summary(resc2)
+```
+En resc2, 1207 genes presentan un logFC significativamente negativo y 2603 genes un logFC significativamente positivo a un nivel de significación de 0.01.
+
+```{r, warning=FALSE, include=FALSE}
+#Número de genes diferenciados con alpha 0.01 en resc3
+summary(resc3)
+```
+
+En resc3, 70 genes presentan un logFC significativamente negativo y 193 genes un logFC significativamente positivo a un nivel de significación de 0.01.
+
+Si bajo la significación a 0.05 se observa un descenso en los genes diferencialmente expresados tanto positivos como negativos. En resc1 1071 genes presentan un logFC significativamente negativo y 1943 genes un logFC significativamente positivo a un nivel de significación de 0.05.En resc2 653 genes presentan un logFC significativamente negativo y 2139 genes un logFC significativamente positivo a un nivel de significación de 0.05. En resc3 17 genes presentan un logFC significativamente negativo y 81 genes un logFC significativamente positivo a un nivel de significación de 0.05.
+
+```{r, warning=FALSE, include=FALSE}
+#Número de genes diferenciados con alpha 0.05 en resc1
+summary(resc1, alpha=0.05)
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Número de genes diferenciados con alpha 0.05 en resc2
+summary(resc2, alpha=0.05)
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Número de genes diferenciados con alpha 0.05 en resc3
+summary(resc3, alpha=0.05)
+```
+Los resultados del análisis de expresión diferencial con DESeq2 los visualizo mediante un gráfico MAplot.Este gráfico representa lea media de lecturas normalizadas de cada gen frente al logaritmo de base 2 del fold change.
+
+```{r, include=FALSE}
+#Gráfico resc1 expresión diferencial
+plotMA(resc1, ylim=c(-2,2))
+```
+
+```{r, fig.cap="Figura7: Gráfico MAplot resc1 expresión diferencial", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure7.png")
+```
+
+```{r, include=FALSE}
+#Gráfico resc2 expresión diferencial
+plotMA(resc2, ylim=c(-2,2))
+```
+
+```{r, fig.cap="Figura8: Gráfico MAplot resc2 expresión diferencial", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure8.png")
+```
+
+```{r, include=FALSE}
+#Gráfico resc3 expresión diferencial
+plotMA(resc3, ylim=c(-2,2))
+```
+```{r, fig.cap="Figura9: Gráfico MAplot resc3 expresión diferencial", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure9.png")
+```
+
+El paquete DESeq2 también incluye una función con la que reducir el efecto del tamaño siendo útil para la visualización y obtener un ranking adecuado de los genes. La reducción LFC se realiza con la función lfcShrink. Lo realizo para resc1, selecciono la reducción apeglm y represento graficamente.
+
+```{r, warning=FALSE, include=FALSE}
+#Reducción con función lfcShrink
+resc1LFC <- lfcShrink(dea, coef="group_SFI_vs_ELI", type="apeglm")
+```
+
+```{r, include=FALSE}
+#Gráfico resc1 con reducción LFC
+plotMA(resc1LFC, ylim=c(-2,2))
+```
+
+```{r, fig.cap="Figura10: Gráfico MAplot resc1 con reducción LFC", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure10.png")
+```
+
+### 3.4.4 Anotación de los resultados
+Realizo la anotación de los genes con la función mapIds. Repito la operación para cada grupo.
+
+```{r, warning=FALSE, include=FALSE}
+#Anotación de genes resc1 (symbol)
+tmp=gsub("\\..*","",row.names(resc1))
+resc1$symbol <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")  
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Anotación de genes resc1 (entrez)
+resc1$entrez <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+```{r, warning=FALSE, include=FALSE}
+#Anotación de genes resc2 (symbol)
+tmp=gsub("\\..*","",row.names(resc2))
+resc2$symbol <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")  
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Anotación de genes resc2 (entrez)
+resc2$entrez <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Anotación de genes resc3 (symbol)
+tmp=gsub("\\..*","",row.names(resc3))
+resc3$symbol <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")  
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Anotación de genes resc3 (entrez)
+resc3$entrez <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+### 3.4.5 Comparación entre las distintas comparaciones
+Partíamos de tres grupos de muestras, 10 muestras de ELI, 10 muestras de NIT y 10 muestras de SFI. Vamos a realizar la comparación entre las distintas comparaciones. En el 3.4.3 calculé los genes diferencialmente expresados con la función DESeq y results del paquete DESeq2 comparando los grupos ELI, NIT y SFI 2 a 2. Ahora lo voy a hacer con la función lmFit de la librería limma.
+
+Creo la matriz de contraste.
+
+
+```{r, warning=FALSE, echo=FALSE}
+#Matriz de contraste
+macont <- makeContrasts(ELI - NIT, ELI - SFI, NIT -SFI, levels= madis)
+macont
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Realizo contraste con lmFit
+fit <- lmFit(transvoom) 
+fit.cont <- contrasts.fit(fit, macont)
+fit.cont <- eBayes(fit.cont)
+```
+
+```{r, warning=FALSE, echo=FALSE}
+#Genes diferencialmente expresados
+summa.fit <- decideTests(fit.cont,adjust.method = "fdr")
+summary(summa.fit)
+```
+
+Los resultados realizando la comparación de comparaciones con el modelo lineal de la librería limma da unos resultados de genes diferencialmente expresados todavía más bajos que los realizados con DESeq y results utilizando una significación de 0.05. De hecho para la comparación entre el grupo NIT y SFI no hay genes significativamente positivos ni negativos.
+
+```{r,fig.cap="Figura11: Diagrama comparación comparaciones con libreria limma", warning=FALSE, echo=FALSE}
+vennDiagram(summa.fit)
+```
+
+### 3.4.6 Análisis de significación biológica
+Realizo el análisis de significación biológica con la función goseq en cada uno de los grupos para ver en qué procesos biológicos y vías metabólicas se ven implicados los genes seleccionados. Con la función GOseq obtengo los términos de Gene Ontology de los genes diferencialmente expresados.
+
+Términos Gene Ontology resc1: "GO:0006955" "GO:0002376" "GO:0050896" "GO:0023052" "GO:0007154" "GO:0007165"
+
+```{r, fig.cap="Figura12: Bondad de ajuste resc1", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure12.png")
+```
+
+```{r, fig.cap="Figura13: Resultado función goseq", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure13.png")
+```
+
+```{r, warning=FALSE, include=FALSE}
+#Análisis de significación biológica resc1
+genes1 <- as.integer(p.adjust(resc1@listData$pvalue[resc1@listData$log2FoldChange!=0],method="BH")<.05)
+names(genes1) <- row.names(resc1@rownames)
+genesna1 <- na.omit(genes1)
+DEgenes1 <- as.integer(resc1$pvalue <= 0.05)
+tmp1 <- gsub("\\..*","",row.names(resc1))
+names(DEgenes1) <- tmp1
+pwf1 <-nullp(DEgenes1,"hg19","ensGene")
+GO.wall1 <- goseq(pwf1,"hg19","ensGene")
+head(GO.wall1)
+enrichedGO1 <- GO.wall1$category[p.adjust(GO.wall1$over_represented_pvalue, method="BH")<0.05]
+head(enrichedGO1)
+```
+Términos Gene Ontology resc2:"GO:0002376" "GO:0006955" "GO:0002250" "GO:0046649" "GO:0002682" "GO:0045321"
+
+```{r,warning=FALSE, include=FALSE}
+#Análisis de significación biológica resc2
+genes2 <- as.integer(p.adjust(resc2@listData$pvalue[resc2@listData$log2FoldChange!=0],method="BH")<.05)
+names(genes2) <- row.names(resc2@rownames)
+genesna2 <- na.omit(genes2)
+DEgenes2 <- as.integer(resc2$pvalue <= 0.05)
+tmp2 <- gsub("\\..*","",row.names(resc2))
+names(DEgenes2) <- tmp2
+pwf2 <-nullp(DEgenes2,"hg19","ensGene")
+GO.wall2 <- goseq(pwf2,"hg19","ensGene")
+head(GO.wall2)
+enrichedGO2 <- GO.wall2$category[p.adjust(GO.wall2$over_represented_pvalue, method="BH")<0.05]
+head(enrichedGO2)
+```
+
+```{r, fig.cap="Figura14: Bondad de ajuste resc2", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure14.png")
+```
+
+```{r, fig.cap="Figura15: Resultado función goseq resc2", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure15.png")
+```
+
+
+```{r,warning=FALSE, include=FALSE}
+#Análisis de significación biológica resc3
+genes3 <- as.integer(p.adjust(resc3@listData$pvalue[resc3@listData$log2FoldChange!=0],method="BH")<.05)
+names(genes3) <- row.names(resc3@rownames)
+genesna3 <- na.omit(genes3)
+DEgenes3 <- as.integer(resc3$pvalue <= 0.05)
+tmp3 <- gsub("\\..*","",row.names(resc3))
+names(DEgenes3) <- tmp3
+pwf3 <-nullp(DEgenes3,"hg19","ensGene")
+GO.wall3 <- goseq(pwf3,"hg19","ensGene")
+head(GO.wall3)
+enrichedGO3 <- GO.wall3$category[p.adjust(GO.wall3$over_represented_pvalue, method="BH")<0.05]
+head(enrichedGO3)
+```
+
+```{r, fig.cap="Figura16: Bondad de ajuste resc3", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure16.png")
+```
+
+```{r, fig.cap="Figura17: Resultado función goseq resc3", echo=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure17.png")
+```
+Términos Gene Ontology resc3: "GO:0022610" "GO:0007155" "GO:0030155" "GO:0002250" "GO:0098609" "GO:0007159"
+
+# 4.Resultados
+Utilizando DESeq2 con un nivel de significación de 0.05 evalúo la expresión diferencial comparando entre grupos resc1 (ELI-NIT): 1071 genes presentan un logFC significativamente negativo y 1943 genes un logFC significativamente positivo.En resc2 (ELI-SFI) 653 genes presentan un logFC significativamente negativo y 2139 genes un logFC significativamente positivo. En resc3 (NIT-SFI) 17 genes presentan un logFC significativamente negativo y 81 genes un logFC significativamente positivo.
+
+# 5.Discusión
+La tencnología RNA-seq está suponiendo una revolución de los estudios de transcriptómica pero todavía no se ha decidido la metodología estándar a seguir para el ánálisis de los datos especialmente los de expresión diferencial. En este trabajo hago la expresión diferencial con DESeq2 y con Limma, que son 2 de los más populares y los resultados presentan diferencias.
+
+# 6.Apéndice
+Tal y cómo se ha hablado en repetidas ocasiones, la reproducibilidad del estudio es fundamental a la hora de trabajar como bioinformáticos, con lo que creo un repositorio en Github con todo lo relativo al proyecto de forma que se pueda clonar en otro ordenador y reproducir mi trabajo^[https://cfss.uchicago.edu/setup/git-with-rstudio/]. 
+
+URL(puesta también al inicio del informe): https://github.com/bpardom/AO_PEC2.git
+
+Pongo a continuación el código de R utilizado para la realización del análisis. También está disponible en el documento RMD disponible en repositorio GitHub.
+
+```{r, warning=FALSE}
+#Cargo las librerías que utilizo para la realización del análisis
+library(dplyr)
+library(stringr)
+library(BiocManager)
+library(DESeq2)
+library(edgeR)
+library(DEFormats)
+library(pheatmap)
+library(RColorBrewer)
+library(pcaExplorer)
+library(apeglm)
+library(limma)
+library(ggbeeswarm)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(grex)
+library(clusterProfiler)
+library(goseq)
+```
+
+```{r, warning=FALSE}
+#Cargo los datos utilizando read.csv
+targets <- read.csv(file = "C:/Bea/Master/Datos omicos Bea/PEC2/Data/targets.csv", header = T, sep = ",")
+counts <- read.csv(file = "C:/Bea/Master/Datos omicos Bea/PEC2/Data/counts.csv", header = T, sep = ";")
+```
+
+```{r, warning=FALSE}
+#Fijo semilla y selecciono del archivo targets 10 de cada grupo sin reemplazo
+set.seed(123456)
+selec<- targets %>% group_by(Group) %>% sample_n(size = 10, replace = FALSE)
+```
+
+
+```{r, warning=FALSE}
+#Soluciono error entre . y - Cojo para cada muestra seleccionada en targets la columna de counts cuyo nombre coincida
+colnames(counts) <- str_replace_all(colnames(counts), "[.]", "-")
+selecname <- c(selec$Sample_Name)
+seleccount <- counts[2:293][selecname]
+rownames(seleccount) <- counts[,1]
+```
+
+```{r, warning=FALSE}
+#Nombro cada columna del grupo ELI con números correlativos e igual para NIT y SFI
+cols<-c("ELI1","ELI2","ELI3","ELI4","ELI5","ELI6","ELI7","ELI8","ELI9","ELI10","NIT1","NIT2","NIT3","NIT4","NIT15","NIT6","NIT7","NIT8","NIT9","NIT10","SFI1","SFI2","SFI3","SFI4","SFI5","SFI6","SFI7","SFI8","SFI9","SFI10")
+colnames(seleccount)<-cols
+```
+
+```{r, warning=FALSE}
+#Cantidad de genes
+nrow(seleccount)
+```
+
+```{r, warning=FALSE}
+#Creación de un objeto DGElist a partir de la matriz de conteos
+grupos <- rep(c("ELI", "NIT", "SFI"), each = 10)
+seleclist <- DGEList(as.matrix(seleccount), group = grupos)
+```
+
+```{r, warning=FALSE}
+#Calculo de recuento por millón con cpm
+selecDESmillion <- cpm(seleclist)
+scmillion <- selecDESmillion > 1
+scmillionk <- which(rowSums(scmillion) >= 2)
+millionlist <- seleclist[scmillionk,]
+```
+
+```{r, warning=FALSE}
+#Cantidad de genes tras filtrado
+nrow(millionlist)
+```
+
+```{r, warning=FALSE}
+#Transformación logarítmica con rlog
+millionlist <- as.DESeqDataSet(millionlist)
+millionlog <- rlog(millionlist, blind = FALSE)
+```
+
+```{r, warning=FALSE}
+#Cálculo de las distancias entre muestras y su representación mediane Heatmap
+sdist <- dist(t(assay(millionlog)))
+sampleDistMatrix <- as.matrix(sdist)
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sdist,
+         clustering_distance_cols = sdist,
+         col = colors)
+```
+
+```{r, warning=FALSE}
+#Gráfico ánalisis de componentes
+pcaplot(millionlog,intgroup = c("group"))
+```
+
+```{r, warning=FALSE}
+#Distribución del recuento de cada muestra 
+distro_expr(millionlog,plot_type = "density")
+```
+
+```{r, warning=FALSE}
+#Distribución de cada muestra 
+distro_expr(millionlog,plot_type = "violin")
+```
+
+
+```{r, warning=FALSE}
+#Boxplot 
+distro_expr(millionlog,plot_type = "boxplot")
+```
+
+```{r,warning=FALSE}
+#Matriz de diseño
+madis <- cbind(ELI = c(1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0), 
+               NIT = c(0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0), 
+               SFI= c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1))
+rownames(madis) <- (rownames(millionlog@colData))
+madis
+```
+
+```{r, warning=FALSE}
+trans <- as.DGEList(millionlist)
+transnorm <- calcNormFactors(millionlist)
+transvoom <- voom(transnorm,madis,plot = TRUE)
+```
+
+```{r, warning=FALSE}
+#Análisis de expresión diferencial con función DESeq
+dea <- DESeq(millionlist)
+resc1 <- results(dea,contrast = c("group", "ELI", "SFI"))
+resc2 <- results(dea,contrast = c("group", "ELI", "NIT"))
+resc3 <- results(dea,contrast = c("group", "SFI", "NIT"))
+head(resc1)
+```
+
+```{r, warning=FALSE}
+#Ordeno según pvalor
+resOrdered1 <- resc1[order(resc1$pvalue),]
+resOrdered2 <- resc2[order(resc2$pvalue),]
+resOrdered3 <- resc3[order(resc3$pvalue),]
+```
+
+```{r, warning=FALSE}
+#Número de genes diferenciados con alpha 0.01 en resc1
+summary(resc1)
+```
+
+```{r, warning=FALSE}
+#Número de genes diferenciados con alpha 0.01 en resc2
+summary(resc2)
+```
+
+```{r, warning=FALSE}
+#Número de genes diferenciados con alpha 0.01 en resc3
+summary(resc3)
+```
+
+
+```{r, warning=FALSE}
+#Número de genes diferenciados con alpha 0.05 en resc1
+summary(resc1, alpha=0.05)
+```
+
+```{r, warning=FALSE}
+#Número de genes diferenciados con alpha 0.05 en resc2
+summary(resc2, alpha=0.05)
+```
+
+```{r, warning=FALSE}
+#Número de genes diferenciados con alpha 0.05 en resc3
+summary(resc3, alpha=0.05)
+```
+
+```{r, warning=FALSE}
+#Gráfico resc1 expresión diferencial
+plotMA(resc1, ylim=c(-2,2))
+```
+
+```{r,warning=FALSE, echo=TRUE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure7.png")
+```
+
+```{r, warning=FALSE}
+#Gráfico resc2 expresión diferencial
+plotMA(resc2, ylim=c(-2,2))
+```
+
+```{r, warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure8.png")
+```
+
+```{r, warning=FALSE}
+#Gráfico resc3 expresión diferencial
+plotMA(resc3, ylim=c(-2,2))
+```
+
+```{r, warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure9.png")
+```
+
+```{r, warning=FALSE}
+#Reducción con función lfcShrink
+resc1LFC <- lfcShrink(dea, coef="group_SFI_vs_ELI", type="apeglm")
+```
+
+```{r, warning=FALSE}
+#Gráfico resc1 con reducción LFC
+plotMA(resc1LFC, ylim=c(-2,2))
+```
+
+```{r, warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure10.png")
+```
+
+```{r, warning=FALSE}
+#Anotación de genes resc1 (symbol)
+tmp=gsub("\\..*","",row.names(resc1))
+resc1$symbol <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")  
+```
+
+```{r, warning=FALSE}
+#Anotación de genes resc1 (entrez)
+resc1$entrez <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+```{r, warning=FALSE}
+#Anotación de genes resc2 (symbol)
+tmp=gsub("\\..*","",row.names(resc2))
+resc2$symbol <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")  
+```
+
+```{r, warning=FALSE}
+#Anotación de genes resc2 (entrez)
+resc2$entrez <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+```{r, warning=FALSE}
+#Anotación de genes resc3 (symbol)
+tmp=gsub("\\..*","",row.names(resc3))
+resc3$symbol <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")  
+```
+
+```{r, warning=FALSE}
+#Anotación de genes resc3 (entrez)
+resc3$entrez <- mapIds(org.Hs.eg.db,
+                     keys=tmp,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+```{r, warning=FALSE}
+#Matriz de contraste
+macont <- makeContrasts(ELI - NIT, ELI - SFI, NIT -SFI, levels= madis)
+macont
+```
+
+```{r, warning=FALSE}
+#Realizo contraste con lmFit
+fit <- lmFit(transvoom) 
+fit.cont <- contrasts.fit(fit, macont)
+fit.cont <- eBayes(fit.cont)
+```
+
+```{r, warning=FALSE}
+#Genes diferencialmente expresados
+summa.fit <- decideTests(fit.cont,adjust.method = "fdr")
+summary(summa.fit)
+```
+
+```{r, warning=FALSE}
+vennDiagram(summa.fit)
+```
+
+```{r, warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure12.png")
+```
+
+```{r,warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure13.png")
+```
+
+```{r,warning=FALSE}
+#Análisis de significación biológica resc1
+genes1 <- as.integer(p.adjust(resc1@listData$pvalue[resc1@listData$log2FoldChange!=0],method="BH")<.05)
+names(genes1) <- row.names(resc1@rownames)
+genesna1 <- na.omit(genes1)
+DEgenes1 <- as.integer(resc1$pvalue <= 0.05)
+tmp1 <- gsub("\\..*","",row.names(resc1))
+names(DEgenes1) <- tmp1
+pwf1 <-nullp(DEgenes1,"hg19","ensGene")
+GO.wall1 <- goseq(pwf1,"hg19","ensGene")
+head(GO.wall1)
+enrichedGO1 <- GO.wall1$category[p.adjust(GO.wall1$over_represented_pvalue, method="BH")<0.05]
+head(enrichedGO1)
+```
+
+```{r,warning=FALSE}
+#Análisis de significación biológica resc2
+genes2 <- as.integer(p.adjust(resc2@listData$pvalue[resc2@listData$log2FoldChange!=0],method="BH")<.05)
+names(genes2) <- row.names(resc2@rownames)
+genesna2 <- na.omit(genes2)
+DEgenes2 <- as.integer(resc2$pvalue <= 0.05)
+tmp2 <- gsub("\\..*","",row.names(resc2))
+names(DEgenes2) <- tmp2
+pwf2 <-nullp(DEgenes2,"hg19","ensGene")
+GO.wall2 <- goseq(pwf2,"hg19","ensGene")
+head(GO.wall2)
+enrichedGO2 <- GO.wall2$category[p.adjust(GO.wall2$over_represented_pvalue, method="BH")<0.05]
+head(enrichedGO2)
+```
+
+```{r,warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure14.png")
+```
+
+```{r,warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure15.png")
+```
+
+```{r,warning=FALSE}
+#Análisis de significación biológica resc3
+genes3 <- as.integer(p.adjust(resc3@listData$pvalue[resc3@listData$log2FoldChange!=0],method="BH")<.05)
+names(genes3) <- row.names(resc3@rownames)
+genesna3 <- na.omit(genes3)
+DEgenes3 <- as.integer(resc3$pvalue <= 0.05)
+tmp3 <- gsub("\\..*","",row.names(resc3))
+names(DEgenes3) <- tmp3
+pwf3 <-nullp(DEgenes3,"hg19","ensGene")
+GO.wall3 <- goseq(pwf3,"hg19","ensGene")
+head(GO.wall3)
+enrichedGO3 <- GO.wall3$category[p.adjust(GO.wall3$over_represented_pvalue, method="BH")<0.05]
+head(enrichedGO3)
+```
+
+```{r,warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure16.png")
+```
+
+```{r,warning=FALSE}
+knitr::include_graphics("C:/Bea/Master/Datos omicos Bea/PEC2/Analisis/Results/figure17.png")
+```
